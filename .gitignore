@@ -1,0 +1,10 @@
+# Never commit local API keys, runtime secrets, or live SQLite state
+.env
+data/runtime_config.json
+data/*.db
+data/*.db-journal
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/

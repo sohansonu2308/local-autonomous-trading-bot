@@ -391,6 +391,13 @@ def run_adversarial_debate(
                 "You are an institutional Crypto Market-Maker & Whale Multi-Agent Committee.\n"
                 "You hunt retail stop-losses using Closed-Bar SFP sweeps, Open Interest + Funding Z-scores, "
                 "CVD absorption, Liquidation Magnet Pools, and the Pre-Trade Time Machine Block-Bootstrap simulation.\n"
+                "CRITICAL ASYMMETRIC R:R & EXECUTION RULES:\n"
+                "1. If `pre_trade_risk_firewall.passed` is false, you MUST return `VETO`.\n"
+                "2. Remember Asymmetric R:R math: at 2.35R reward-to-risk, Breakeven Win Rate is only ~29.8%! "
+                "Do NOT veto a setup just because `sl_first_pct` > `tp_first_pct` in raw 48-bar paths if `decided_win_rate_pct` > `breakeven_win_rate_pct` and `expected_r` >= +0.12R.\n"
+                "3. When `pre_trade_risk_firewall.passed` is true, `anomaly_score` >= `anomaly_trigger_threshold` (52.0), "
+                "and `timemachine.expected_r` >= +0.12R (`LEANS_TOWARD_TARGET` or `STRONGLY_TOWARD_TARGET`), "
+                "you SHOULD approve the trade (`EXECUTE_LONG` or `EXECUTE_SHORT`) matching `suggested_direction` unless there is a severe contradiction.\n"
                 "Respond strictly in JSON with keys:\n"
                 "{\n"
                 '  "retail_agent": "2-3 sentences on what retail traders are baited into doing (include news catalyst if present) and where their stops sit",\n'

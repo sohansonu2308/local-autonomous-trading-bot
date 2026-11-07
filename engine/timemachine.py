@@ -200,7 +200,7 @@ def run_time_machine(
     hist_decided = hist_wins + hist_losses
     hist_wr = round((hist_wins / hist_decided) * 100.0, 1) if hist_decided >= 3 else mc_decided_wr
 
-    effective_wr = round(0.6 * mc_decided_wr + 0.4 * hist_wr, 1)
+    effective_wr = round(0.45 * mc_decided_wr + 0.55 * hist_wr, 1) if hist_decided >= 3 else mc_decided_wr
     edge_gap = round(effective_wr - breakeven_wr, 1)
 
     hist_ev_r = (
@@ -209,16 +209,16 @@ def run_time_machine(
         else (total_r / replays)
     )
     mc_ev_r = total_r / replays
-    expected_r = round(0.6 * mc_ev_r + 0.4 * hist_ev_r, 2)
+    expected_r = round(0.45 * mc_ev_r + 0.55 * hist_ev_r, 2) if hist_decided >= 3 else round(mc_ev_r, 2)
 
     terminal_prices.sort()
     p5_px = round(terminal_prices[int(0.05 * len(terminal_prices))], 6)
     med_px = round(terminal_prices[int(0.50 * len(terminal_prices))], 6)
     p95_px = round(terminal_prices[int(0.95 * len(terminal_prices))], 6)
 
-    if edge_gap >= 8.0 and expected_r >= 0.20 and hist_wr >= (breakeven_wr - 2.0):
+    if edge_gap >= 7.0 and expected_r >= 0.20 and hist_wr >= (breakeven_wr - 2.0):
         verdict = "STRONGLY_TOWARD_TARGET"
-    elif edge_gap >= 2.0 and expected_r >= 0.08 and hist_wr >= (breakeven_wr - 4.0):
+    elif edge_gap >= 1.5 and expected_r >= 0.10 and hist_wr >= (breakeven_wr - 3.0):
         verdict = "LEANS_TOWARD_TARGET"
     elif edge_gap <= -8.0 or expected_r < -0.05:
         verdict = "STRONGLY_TOWARD_STOP"

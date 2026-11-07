@@ -185,16 +185,40 @@ def analyze_microstructure(bundle: Dict[str, Any]) -> Dict[str, Any]:
     else:
         regime = "RANGING_STOP_HUNT_ENVIRONMENT"
 
-    # 2. Closed-Bar Swing High / Swing Low Liquidity Sweep (SFP) Detector
-    prior_window = closed_candles[-30:-2]
-    swing_high = max(c["high"] for c in prior_window)
-    swing_low = min(c["low"] for c in prior_window)
+    # 2. Closed-Bar Multi-Tier Swing High / Swing Low Liquidity Sweep (SFP) Detector
+    # Tier A: 30-bar Major Swing High/Low swept within last 3 closed candles and reclaimed
+    prior_window_30 = closed_candles[-32:-3]
+    swing_high = max(c["high"] for c in prior_window_30)
+    swing_low = min(c["low"] for c in prior_window_30)
+
+    # Tier B: 14-bar Local Swing High/Low swept within last 2 closed candles and reclaimed
+    prior_window_14 = closed_candles[-16:-2]
+    local_swing_high = max(c["high"] for c in prior_window_14)
+    local_swing_low = min(c["low"] for c in prior_window_14)
 
     last_two_closed_high = max(closed_candles[-1]["high"], closed_candles[-2]["high"])
     last_two_closed_low = min(closed_candles[-1]["low"], closed_candles[-2]["low"])
+    last_three_closed_high = max(last_two_closed_high, closed_candles[-3]["high"])
+    last_three_closed_low = min(last_two_closed_low, closed_candles[-3]["low"])
 
-    bullish_sfp_sweep = (last_two_closed_low < swing_low) and (confirmed_close > swing_low)
-    bearish_sfp_sweep = (last_two_closed_high > swing_high) and (confirmed_close < swing_high)
+    bullish_major_sfp = (last_three_closed_low < swing_low) and (confirmed_close > swing_low)
+    bearish_major_sfp = (last_three_closed_high > swing_high) and (confirmed_close < swing_high)
+
+    bullish_local_sfp = (
+        not bullish_major_sfp
+        and (last_two_closed_low < local_swing_low)
+        and (confirmed_close > local_swing_low)
+        and (last_closed["close"] > last_closed["open"] or last_closed["delta"] > 0)
+    )
+    bearish_local_sfp = (
+        not bearish_major_sfp
+        and (last_two_closed_high > local_swing_high)
+        and (confirmed_close < local_swing_high)
+        and (last_closed["close"] < last_closed["open"] or last_closed["delta"] < 0)
+    )
+
+    bullish_sfp_sweep = bullish_major_sfp or bullish_local_sfp
+    bearish_sfp_sweep = bearish_major_sfp or bearish_local_sfp
 
     dist_to_high_atr = (swing_high - confirmed_close) / max(atr, 1e-9)
     dist_to_low_atr = (confirmed_close - swing_low) / max(atr, 1e-9)
@@ -242,38 +266,48 @@ def analyze_microstructure(bundle: Dict[str, Any]) -> Dict[str, Any]:
     bull_points = 0.0
     bear_points = 0.0
 
-    if bullish_sfp_sweep:
+    if bullish_major_sfp:
         bull_points += 30.0 * weights.get("liquidity_sweep_weight", 1.45)
-    elif dist_to_low_atr < 0.55 and rsi_14 < 36:
+    elif bullish_local_sfp:
+        bull_points += 20.0 * weights.get("liquidity_sweep_weight", 1.45)
+    elif dist_to_low_atr < 0.85 and rsi_14 < 40:
         bull_points += 14.0
 
-    if bearish_sfp_sweep:
+    if bearish_major_sfp:
         bear_points += 30.0 * weights.get("liquidity_sweep_weight", 1.45)
-    elif dist_to_high_atr < 0.55 and rsi_14 > 64:
+    elif bearish_local_sfp:
+        bear_points += 20.0 * weights.get("liquidity_sweep_weight", 1.45)
+    elif dist_to_high_atr < 0.85 and rsi_14 > 60:
         bear_points += 14.0
 
     if cvd_signal in ("BULLISH_WHALE_ABSORPTION", "BULLISH_SWEEP_RECLAIM", "STRONG_SPOT_PERP_BUYING"):
         bull_points += 22.0 * weights.get("cvd_divergence_weight", 1.35)
+        if rel_volume >= 1.25 or normalized_cvd >= 0.95:
+            bull_points += 8.0
     elif cvd_signal in ("BEARISH_WHALE_DISTRIBUTION", "BEARISH_SWEEP_REJECTION", "STRONG_SPOT_PERP_SELLING"):
         bear_points += 22.0 * weights.get("cvd_divergence_weight", 1.35)
+        if rel_volume >= 1.25 or normalized_cvd <= -0.95:
+            bear_points += 8.0
 
-    # Fixed: Require ACTUAL funding Z-score extremity (not just baseline altcoin long/short account ratio)
+    # Require actual funding Z-score extremity or strong positioning + OI confluence
     if funding_zscore <= -1.15:
         bull_points += min(24.0, abs(funding_zscore) * 10.5 * weights.get("funding_zscore_weight", 1.25))
     elif funding_zscore >= 1.15:
         bear_points += min(24.0, abs(funding_zscore) * 10.5 * weights.get("funding_zscore_weight", 1.25))
 
-    if abs(oi_delta_pct) > 1.2:
-        oi_pts = min(16.0, abs(oi_delta_pct) * 3.2 * weights.get("oi_spike_weight", 1.30))
+    if abs(oi_delta_pct) > 0.75:
+        oi_pts = min(16.0, abs(oi_delta_pct) * 3.5 * weights.get("oi_spike_weight", 1.30))
         if bull_points > bear_points:
             bull_points += oi_pts
         elif bear_points > bull_points:
             bear_points += oi_pts
 
     if liq_map["dominant_magnet"] == "UPSIDE_SHORT_LIQUIDATIONS":
-        bull_points += 12.0
+        up_intensity = float(liq_map["nearest_upside_pool"].get("intensity_score", 50.0))
+        bull_points += 15.0 if up_intensity >= 75.0 else 12.0
     elif liq_map["dominant_magnet"] == "DOWNSIDE_LONG_LIQUIDATIONS":
-        bear_points += 12.0
+        dn_intensity = float(liq_map["nearest_downside_pool"].get("intensity_score", 50.0))
+        bear_points += 15.0 if dn_intensity >= 75.0 else 12.0
 
     # Penalize heavily if trying to fade a steady grind or strong opposing CVD flow!
     fade_penalty = float(weights.get("trend_counter_fade_penalty", 0.65))

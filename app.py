@@ -313,10 +313,26 @@ class WhaleDashboardHandler(BaseHTTPRequestHandler):
         self._send_json({"error": "Unknown endpoint"}, 404)
 
 
+def _prevent_windows_sleep() -> None:
+    """
+    Calls the native Windows Power Management API (SetThreadExecutionState)
+    with ES_CONTINUOUS | ES_SYSTEM_REQUIRED (0x80000001) so Windows never
+    suspends Python background threads overnight while the bot is running.
+    """
+    if os.name == "nt":
+        try:
+            import ctypes
+            ctypes.windll.kernel32.SetThreadExecutionState(0x80000001)
+        except Exception:
+            pass
+
+
 def _background_autopilot_worker() -> None:
+    _prevent_windows_sleep()
     while True:
         time.sleep(10)
         try:
+            _prevent_windows_sleep()
             settings = load_settings()
             if settings.get("auto_pilot_enabled"):
                 execute_watchlist_scan(trigger_debates=True)
@@ -335,6 +351,7 @@ def bootstrap_initial_experience() -> None:
 
 
 def run_server(host: str = "127.0.0.1", port: int = 8080) -> None:
+    _prevent_windows_sleep()
     bootstrap_initial_experience()
     bg_thread = threading.Thread(target=_background_autopilot_worker, daemon=True)
     bg_thread.start()

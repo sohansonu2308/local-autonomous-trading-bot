@@ -111,6 +111,7 @@ def init_db() -> None:
             initial_stop_loss REAL NOT NULL,
             take_profit REAL NOT NULL,
             position_size_usd REAL NOT NULL,
+            margin_used_usd REAL DEFAULT 0.0,
             qty REAL NOT NULL,
             leverage REAL NOT NULL,
             risk_usd REAL NOT NULL,
@@ -236,6 +237,11 @@ def init_db() -> None:
         )
         """
     )
+
+    cur.execute("PRAGMA table_info(trades)")
+    trade_cols = [r["name"] for r in cur.fetchall()]
+    if "margin_used_usd" not in trade_cols:
+        cur.execute("ALTER TABLE trades ADD COLUMN margin_used_usd REAL DEFAULT 0.0")
 
     now_iso = datetime.now(timezone.utc).isoformat()
 

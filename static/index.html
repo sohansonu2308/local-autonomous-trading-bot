@@ -355,7 +355,7 @@
                 <th>Symbol</th>
                 <th>Side</th>
                 <th>Setup Type</th>
-                <th>Size USD (Lev)</th>
+                <th>Margin / Notional (Lev)</th>
                 <th>Entry</th>
                 <th>Current</th>
                 <th>Stop Loss</th>
@@ -639,7 +639,7 @@
       const eqEl = document.getElementById('kpiEquity');
       eqEl.textContent = fmtUsd(p.current_equity);
       eqEl.className = 'kpi-value ' + (p.total_return_pct >= 0 ? 'text-green' : 'text-red');
-      document.getElementById('kpiReturn').textContent = `Return: ${p.total_return_pct >= 0 ? '+' : ''}${p.total_return_pct}% | Cash: ${fmtUsd(p.cash_balance)}`;
+      document.getElementById('kpiReturn').textContent = `Return: ${p.total_return_pct >= 0 ? '+' : ''}${p.total_return_pct}% | Free Margin: ${fmtUsd(p.free_margin_usd)} | Used: ${fmtUsd(p.used_margin_usd)}`;
 
       const pnlEl = document.getElementById('kpiRealizedPnl');
       pnlEl.textContent = (p.realized_pnl >= 0 ? '+' : '') + fmtUsd(p.realized_pnl);
@@ -831,7 +831,10 @@
               <td><strong>${t.symbol}</strong></td>
               <td><span class="badge ${t.direction === 'LONG' ? 'badge-green' : 'badge-red'}">${t.direction}</span></td>
               <td>${t.setup_type}</td>
-              <td>${fmtUsd(t.position_size_usd)} (${t.leverage}x)</td>
+              <td>
+                <div><strong class="text-accent">Margin: ${fmtUsd(t.margin_used_usd)}</strong></div>
+                <div style="font-size:11px; color:var(--text-1);">Notional: ${fmtUsd(t.position_size_usd)} (${t.leverage}x)</div>
+              </td>
               <td>$${fmtPrice(t.entry_price)}</td>
               <td>$${fmtPrice(t.current_price)}</td>
               <td class="text-red">$${fmtPrice(t.stop_loss)}</td>

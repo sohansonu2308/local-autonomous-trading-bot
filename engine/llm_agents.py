@@ -76,9 +76,19 @@ def check_pre_trade_risk_firewall(
     )
     pnl_today = float(cur.fetchone()["pnl_today"] or 0.0)
 
-    cur.execute("SELECT SUM(risk_usd) as open_risk FROM trades WHERE status = 'OPEN'")
-    open_risk = float(cur.fetchone()["open_risk"] or 0.0)
+    cur.execute("SELECT SUM(risk_usd) as open_risk, SUM(margin_used_usd) as used_margin FROM trades WHERE status = 'OPEN'")
+    risk_row = cur.fetchone()
+    open_risk = float(risk_row["open_risk"] or 0.0)
+    used_margin = float(risk_row["used_margin"] or 0.0)
     conn.close()
+
+    free_margin = max(0.0, cash_bal - used_margin)
+    if free_margin < cash_bal * 0.12:
+        return {
+            "passed": False,
+            "code": "INSUFFICIENT_FREE_MARGIN",
+            "detail": f"Free margin (${free_margin:.2f}) is below minimum 12% collateral buffer (Used Margin: ${used_margin:.2f} / Wallet: ${cash_bal:.2f}).",
+        }
 
     new_trade_risk = cash_bal * (float(settings.get("max_risk_per_trade_pct", 1.5)) / 100.0)
     worst_case_daily_drawdown = max(0.0, -pnl_today) + open_risk + new_trade_risk

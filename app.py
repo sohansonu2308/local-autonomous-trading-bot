@@ -26,6 +26,7 @@ from engine.llm_agents import run_adversarial_debate
 from engine.paper_trader import (
     get_portfolio_summary,
     open_paper_trade,
+    close_position_at_market,
     log_shadow_trade,
     update_positions_and_shadows_for_bar,
 )
@@ -177,25 +178,7 @@ def reset_paper_account() -> Dict[str, Any]:
 
 
 def manual_close_position(trade_id: int) -> Dict[str, Any]:
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM trades WHERE id = ? AND status = 'OPEN'", (trade_id,))
-    row = cur.fetchone()
-    if not row:
-        conn.close()
-        return {"status": "NOT_FOUND"}
-    t = dict(row)
-    sym = t["symbol"]
-    px = float(t["current_price"])
-    conn.close()
-
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("UPDATE trades SET stop_loss = ? WHERE id = ?", (px, trade_id))
-    conn.commit()
-    conn.close()
-    update_positions_and_shadows_for_bar(sym, px, px, px)
-    return {"status": "CLOSED", "trade_id": trade_id}
+    return close_position_at_market(trade_id, reason="MANUAL_USER_CLOSE")
 
 
 class WhaleDashboardHandler(BaseHTTPRequestHandler):

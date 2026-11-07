@@ -280,14 +280,22 @@ def analyze_microstructure(bundle: Dict[str, Any]) -> Dict[str, Any]:
     elif dist_to_high_atr < 0.85 and rsi_14 > 60:
         bear_points += 14.0
 
-    if cvd_signal in ("BULLISH_WHALE_ABSORPTION", "BULLISH_SWEEP_RECLAIM", "STRONG_SPOT_PERP_BUYING"):
+    if cvd_signal in ("BULLISH_WHALE_ABSORPTION", "BULLISH_SWEEP_RECLAIM"):
         bull_points += 22.0 * weights.get("cvd_divergence_weight", 1.35)
         if rel_volume >= 1.25 or normalized_cvd >= 0.95:
             bull_points += 8.0
-    elif cvd_signal in ("BEARISH_WHALE_DISTRIBUTION", "BEARISH_SWEEP_REJECTION", "STRONG_SPOT_PERP_SELLING"):
+    elif cvd_signal == "STRONG_SPOT_PERP_BUYING" and 36.0 <= rsi_14 <= 60.0 and funding_zscore <= 0.75:
+        bull_points += 18.0 * weights.get("cvd_divergence_weight", 1.35)
+        if rel_volume >= 1.35:
+            bull_points += 6.0
+    elif cvd_signal in ("BEARISH_WHALE_DISTRIBUTION", "BEARISH_SWEEP_REJECTION"):
         bear_points += 22.0 * weights.get("cvd_divergence_weight", 1.35)
         if rel_volume >= 1.25 or normalized_cvd <= -0.95:
             bear_points += 8.0
+    elif cvd_signal == "STRONG_SPOT_PERP_SELLING" and 40.0 <= rsi_14 <= 64.0 and funding_zscore >= -0.75:
+        bear_points += 18.0 * weights.get("cvd_divergence_weight", 1.35)
+        if rel_volume >= 1.35:
+            bear_points += 6.0
 
     # Require actual funding Z-score extremity or strong positioning + OI confluence
     if funding_zscore <= -1.15:
@@ -315,6 +323,12 @@ def analyze_microstructure(bundle: Dict[str, Any]) -> Dict[str, Any]:
         bear_points *= fade_penalty
     elif regime in ("HIGH_VOL_BEAR_EXPANSION", "STEADY_BEAR_GRIND") and bull_points > bear_points:
         bull_points *= fade_penalty
+
+    # Never chase oversold capitulation bottoms (<38 RSI) with shorts or overbought tops (>62 RSI) with longs!
+    if bear_points > bull_points and (rsi_14 < 38.0 or funding_zscore < -0.85) and not bearish_sfp_sweep:
+        bear_points *= 0.45
+    elif bull_points > bear_points and (rsi_14 > 62.0 or funding_zscore > 0.85) and not bullish_sfp_sweep:
+        bull_points *= 0.45
 
     if normalized_cvd > 0.60 and bear_points > bull_points:
         bear_points *= 0.50  # Never aggressively short into strong net buyer absorption

@@ -40,6 +40,7 @@ STATIC_DIR = BASE_DIR / "static"
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
 
 LATEST_MARKET_SCANS: Dict[str, Dict[str, Any]] = {}
+LAST_DEBATED_BAR_TS: Dict[str, int] = {}
 SCAN_LOCK = threading.Lock()
 
 
@@ -79,11 +80,18 @@ def execute_watchlist_scan(trigger_debates: bool = True) -> Dict[str, Any]:
                 open_syms = [r["symbol"] for r in cur.fetchall()]
                 conn.close()
 
+                # Skip duplicate debates/shadows on coins with an already-open position
+                # or on the exact same 15m closed candle that was already debated
+                bar_ts = int(ms.get("last_closed_bar_ts") or 0)
+                if sym in open_syms or LAST_DEBATED_BAR_TS.get(sym) == bar_ts:
+                    continue
+
+                LAST_DEBATED_BAR_TS[sym] = bar_ts
                 debate = run_adversarial_debate(
                     ms=ms,
                     open_positions_count=len(open_syms),
                     max_open_positions=max_pos,
-                    already_in_symbol=(sym in open_syms),
+                    already_in_symbol=False,
                     record_to_db=True,
                 )
                 debates_triggered.append({"symbol": sym, "debate": debate})
@@ -148,6 +156,7 @@ def get_full_dashboard_payload() -> Dict[str, Any]:
 
 
 def reset_paper_account() -> Dict[str, Any]:
+    LAST_DEBATED_BAR_TS.clear()
     settings = load_settings()
     initial_bal = float(settings.get("initial_balance_usd", 10000.0))
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -299,13 +308,13 @@ class WhaleDashboardHandler(BaseHTTPRequestHandler):
 def _prevent_windows_sleep() -> None:
     """
     Calls the native Windows Power Management API (SetThreadExecutionState)
-    with ES_CONTINUOUS | ES_SYSTEM_REQUIRED (0x80000001) so Windows never
-    suspends Python background threads overnight while the bot is running.
+    with ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED (0x80000041)
+    so Windows never suspends Python background threads overnight while the bot is running.
     """
     if os.name == "nt":
         try:
             import ctypes
-            ctypes.windll.kernel32.SetThreadExecutionState(0x80000001)
+            ctypes.windll.kernel32.SetThreadExecutionState(0x80000041)
         except Exception:
             pass
 

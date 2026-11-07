@@ -62,6 +62,21 @@ def check_pre_trade_risk_firewall(
             "detail": f"Refusing to LONG while 10-bar Normalized CVD is strongly negative ({norm_cvd:+.2f} net selling).",
         }
 
+    rsi_14 = float(ms.get("rsi_14") or 50.0)
+    if direction == "SHORT" and rsi_14 < 38.0 and not ms.get("bearish_sfp_sweep"):
+        return {
+            "passed": False,
+            "code": "OVERSOLD_CAPITULATION_SHORT_BLOCK",
+            "detail": f"Refusing to SHORT into oversold capitulation (RSI {rsi_14:.1f} < 38.0) without a Bearish SFP sweep.",
+        }
+
+    if direction == "LONG" and rsi_14 > 62.0 and not ms.get("bullish_sfp_sweep"):
+        return {
+            "passed": False,
+            "code": "OVERBOUGHT_EXHAUSTION_LONG_BLOCK",
+            "detail": f"Refusing to LONG into overbought exhaustion (RSI {rsi_14:.1f} > 62.0) without a Bullish SFP sweep.",
+        }
+
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT initial_balance, cash_balance FROM portfolio_state WHERE id = 1")
@@ -80,7 +95,17 @@ def check_pre_trade_risk_firewall(
     risk_row = cur.fetchone()
     open_risk = float(risk_row["open_risk"] or 0.0)
     used_margin = float(risk_row["used_margin"] or 0.0)
+
+    cur.execute("SELECT COUNT(*) as same_dir_cnt FROM trades WHERE status = 'OPEN' AND direction = ?", (direction,))
+    same_dir_cnt = int(cur.fetchone()["same_dir_cnt"] or 0)
     conn.close()
+
+    if same_dir_cnt >= 2 and float(ms.get("anomaly_score") or 0.0) < 65.0:
+        return {
+            "passed": False,
+            "code": "MAX_SAME_DIRECTION_CORRELATED_HEAT",
+            "detail": f"Already holding {same_dir_cnt} open {direction} positions; blocking correlated {direction} entry below 65.0 A+ SFP threshold.",
+        }
 
     free_margin = max(0.0, cash_bal - used_margin)
     if free_margin < cash_bal * 0.12:

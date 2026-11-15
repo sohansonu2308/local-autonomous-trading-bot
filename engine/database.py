@@ -1,0 +1,324 @@
+import sqlite3
+import json
+from datetime import datetime, timezone
+from typing import Dict, Any, List
+from config import DB_PATH, DEFAULT_QUANT_WEIGHTS, load_settings
+
+INITIAL_PLAYBOOK_RULES = [
+    {
+        "rule_id": "OPR-01",
+        "category": "LIQUIDITY_SWEEP",
+        "title": "PDH / PDL & 9:15 Opening Range SFP Stop-Hunt Reversal",
+        "condition": "Completed closed 15m candle sweeps Previous Day High (PDH), Previous Day Low (PDL), or 30-bar Swing High/Low to trap retail breakout buyers and trigger stop-losses, then closes back inside the range.",
+        "action": "Fade the false breakout toward Session VWAP and the opposite Option Writer strike magnet. Place stop-loss 1.85x ATR beyond the sweep wick.",
+        "confidence": 0.80,
+        "sample_size": 16,
+        "win_rate": 68.8,
+        "origin": "CORE_DOCTRINE",
+        "active": 1,
+    },
+    {
+        "rule_id": "OPR-02",
+        "category": "CVD_ABSORPTION",
+        "title": "FII / DII Passive Limit Absorption at Intraday VWAP & Support",
+        "condition": "Retail panic selling or FOMO buying pushes price away from Intraday VWAP while closed-bar Volume Delta diverges (passive institutional limit orders absorbing market orders without RSI exhaustion).",
+        "action": "Enter alongside FII/DII passive accumulators once a closed 15m candle confirms reclaiming structure with RSI between 38 and 62.",
+        "confidence": 0.76,
+        "sample_size": 14,
+        "win_rate": 64.3,
+        "origin": "CORE_DOCTRINE",
+        "active": 1,
+    },
+    {
+        "rule_id": "OPR-03",
+        "category": "CROWDED_FUNDING_SQUEEZE",
+        "title": "Option Chain Call/Put Writer Trap & PCR Extremity Squeeze",
+        "condition": "Put-Call Ratio (PCR) Z-score exceeds +1.5 (crowded bullish Put writers / retail Call buyers) or falls below -1.5 (crowded bearish Call writers / retail Put buyers) into a major round-strike OI wall.",
+        "action": "Wait for a closed-bar liquidity sweep against the crowded retail F&O side to ride the institutional short-covering / long-unwinding cascade.",
+        "confidence": 0.82,
+        "sample_size": 19,
+        "win_rate": 68.4,
+        "origin": "CORE_DOCTRINE",
+        "active": 1,
+    },
+    {
+        "rule_id": "OPR-04",
+        "category": "REGIME_DISCIPLINE",
+        "title": "Never Fade High-Volume FII Cash/Futures Trend Expansion or Chase Exhausted RSI",
+        "condition": "When Nifty/Stock/MCX directional trend has >1.8x relative volume, or when 15m RSI is already <38 (oversold capitulation) or >62 (overbought FOMO) without a confirmed SFP sweep.",
+        "action": "Veto counter-trend fades during institutional expansion and strictly block late momentum chasing into exhausted RSI (<38 Short / >62 Long).",
+        "confidence": 0.86,
+        "sample_size": 22,
+        "win_rate": 72.7,
+        "origin": "CORE_DOCTRINE",
+        "active": 1,
+    },
+]
+
+
+def get_conn() -> sqlite3.Connection:
+    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db() -> None:
+    settings = load_settings()
+    initial_bal = float(settings.get("initial_balance_usd", 1000000.0))
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS portfolio_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            initial_balance REAL NOT NULL,
+            cash_balance REAL NOT NULL,
+            realized_pnl REAL NOT NULL DEFAULT 0.0,
+            total_fees_paid REAL NOT NULL DEFAULT 0.0,
+            peak_equity REAL NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS equity_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            equity REAL NOT NULL,
+            cash_balance REAL NOT NULL,
+            unrealized_pnl REAL NOT NULL,
+            drawdown_pct REAL NOT NULL
+        )
+        """
+    )
+
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            status TEXT NOT NULL,
+            setup_type TEXT NOT NULL,
+            regime TEXT NOT NULL,
+            entry_price REAL NOT NULL,
+            current_price REAL NOT NULL,
+            exit_price REAL,
+            stop_loss REAL NOT NULL,
+            initial_stop_loss REAL NOT NULL,
+            take_profit REAL NOT NULL,
+            position_size_usd REAL NOT NULL,
+            margin_used_usd REAL DEFAULT 0.0,
+            qty REAL NOT NULL,
+            leverage REAL NOT NULL,
+            risk_usd REAL NOT NULL,
+            rr_planned REAL NOT NULL,
+            realized_pnl_usd REAL DEFAULT 0.0,
+            realized_r REAL DEFAULT 0.0,
+            unrealized_pnl_usd REAL DEFAULT 0.0,
+            fees_paid_usd REAL DEFAULT 0.0,
+            mae_pct REAL DEFAULT 0.0,
+            mfe_pct REAL DEFAULT 0.0,
+            mae_r REAL DEFAULT 0.0,
+            mfe_r REAL DEFAULT 0.0,
+            highest_price REAL NOT NULL,
+            lowest_price REAL NOT NULL,
+            bars_held INTEGER DEFAULT 0,
+            max_hold_bars INTEGER DEFAULT 24,
+            anomaly_score REAL DEFAULT 0.0,
+            timemachine_verdict TEXT,
+            retail_trap_thesis TEXT,
+            whale_thesis TEXT,
+            risk_judge_verdict TEXT,
+            close_reason TEXT,
+            thesis_grade TEXT,
+            post_mortem_note TEXT,
+            opened_at TEXT NOT NULL,
+            closed_at TEXT,
+            is_historical_sim INTEGER DEFAULT 0
+        )
+        """
+    )
+
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS shadow_trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            setup_type TEXT NOT NULL,
+            regime TEXT NOT NULL,
+            entry_price REAL NOT NULL,
+            stop_loss REAL NOT NULL,
+            take_profit REAL NOT NULL,
+            highest_price REAL NOT NULL,
+            lowest_price REAL NOT NULL,
+            status TEXT NOT NULL,
+            shadow_outcome TEXT,
+            shadow_r REAL DEFAULT 0.0,
+            veto_reason TEXT NOT NULL,
+            anomaly_score REAL DEFAULT 0.0,
+            created_at TEXT NOT NULL,
+            resolved_at TEXT
+        )
+        """
+    )
+
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS agent_debates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT NOT NULL,
+            timeframe TEXT NOT NULL,
+            regime TEXT NOT NULL,
+            anomaly_score REAL NOT NULL,
+            setup_type TEXT NOT NULL,
+            retail_agent_output TEXT NOT NULL,
+            whale_agent_output TEXT NOT NULL,
+            risk_judge_output TEXT NOT NULL,
+            timemachine_summary TEXT,
+            decision TEXT NOT NULL,
+            llm_mode TEXT NOT NULL,
+            snapshot_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS playbook_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_id TEXT UNIQUE NOT NULL,
+            category TEXT NOT NULL,
+            title TEXT NOT NULL,
+            condition TEXT NOT NULL,
+            action TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            sample_size INTEGER NOT NULL DEFAULT 1,
+            win_rate REAL NOT NULL DEFAULT 50.0,
+            origin TEXT NOT NULL,
+            active INTEGER NOT NULL DEFAULT 1,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS quant_weights_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            version INTEGER NOT NULL,
+            weights_json TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            backtest_expectancy_before REAL NOT NULL,
+            backtest_expectancy_after REAL NOT NULL,
+            approved INTEGER NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS news_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_hash TEXT UNIQUE NOT NULL,
+            source TEXT NOT NULL,
+            title TEXT NOT NULL,
+            link TEXT,
+            symbol_tag TEXT NOT NULL,
+            sentiment TEXT NOT NULL,
+            published_at TEXT,
+            first_seen_at TEXT NOT NULL
+        )
+        """
+    )
+
+    cur.execute("PRAGMA table_info(trades)")
+    trade_cols = [r["name"] for r in cur.fetchall()]
+    if "margin_used_usd" not in trade_cols:
+        cur.execute("ALTER TABLE trades ADD COLUMN margin_used_usd REAL DEFAULT 0.0")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    cur.execute("SELECT id FROM portfolio_state WHERE id = 1")
+    if not cur.fetchone():
+        cur.execute(
+            """
+            INSERT INTO portfolio_state (id, initial_balance, cash_balance, realized_pnl, total_fees_paid, peak_equity, updated_at)
+            VALUES (1, ?, ?, 0.0, 0.0, ?, ?)
+            """,
+            (initial_bal, initial_bal, initial_bal, now_iso),
+        )
+        cur.execute(
+            """
+            INSERT INTO equity_history (timestamp, equity, cash_balance, unrealized_pnl, drawdown_pct)
+            VALUES (?, ?, ?, 0.0, 0.0)
+            """,
+            (now_iso, initial_bal, initial_bal),
+        )
+
+    cur.execute("SELECT COUNT(*) as cnt FROM playbook_rules")
+    if cur.fetchone()["cnt"] == 0:
+        for rule in INITIAL_PLAYBOOK_RULES:
+            cur.execute(
+                """
+                INSERT INTO playbook_rules (rule_id, category, title, condition, action, confidence, sample_size, win_rate, origin, active, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    rule["rule_id"],
+                    rule["category"],
+                    rule["title"],
+                    rule["condition"],
+                    rule["action"],
+                    rule["confidence"],
+                    rule["sample_size"],
+                    rule["win_rate"],
+                    rule["origin"],
+                    rule["active"],
+                    now_iso,
+                ),
+            )
+
+    cur.execute("SELECT COUNT(*) as cnt FROM quant_weights_history WHERE approved = 1")
+    if cur.fetchone()["cnt"] == 0:
+        cur.execute(
+            """
+            INSERT INTO quant_weights_history (version, weights_json, reason, backtest_expectancy_before, backtest_expectancy_after, approved, created_at)
+            VALUES (1, ?, 'Initial Baseline NSE & MCX Institutional Operator Microstructure Weights', 0.35, 0.35, 1, ?)
+            """,
+            (json.dumps(DEFAULT_QUANT_WEIGHTS), now_iso),
+        )
+
+    conn.commit()
+    conn.close()
+
+
+def get_active_quant_weights() -> Dict[str, Any]:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT weights_json FROM quant_weights_history WHERE approved = 1 ORDER BY id DESC LIMIT 1"
+    )
+    row = cur.fetchone()
+    conn.close()
+    if row:
+        try:
+            return json.loads(row["weights_json"])
+        except Exception:
+            pass
+    return dict(DEFAULT_QUANT_WEIGHTS)
+
+
+def get_active_playbook_rules() -> List[Dict[str, Any]]:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM playbook_rules WHERE active = 1 ORDER BY confidence DESC")
+    rows = [dict(r) for r in cur.fetchall()]
+    conn.close()
+    return rows

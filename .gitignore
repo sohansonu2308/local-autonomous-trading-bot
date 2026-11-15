@@ -1,0 +1,6 @@
+.env
+data/*.db
+data/*.db-journal
+data/runtime_config.json
+__pycache__/
+*.pyc

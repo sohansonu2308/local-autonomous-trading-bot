@@ -1,0 +1,4 @@
+# Zero mandatory external dependencies (100% Python Standard Library: http.server, urllib.request, sqlite3, xml.etree, json)
+# Optional packages if extending with external broker SDKs:
+# smartapi-python>=1.4.8
+# kiteconnect>=5.0.1

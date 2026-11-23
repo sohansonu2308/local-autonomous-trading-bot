@@ -115,9 +115,17 @@ def check_pre_trade_risk_firewall(
             "detail": f"Free margin (${free_margin:.2f}) is below minimum 12% collateral buffer (Used Margin: ${used_margin:.2f} / Wallet: ${cash_bal:.2f}).",
         }
 
-    new_trade_risk = cash_bal * (float(settings.get("max_risk_per_trade_pct", 1.5)) / 100.0)
+    risk_pct_cfg = float(settings.get("max_risk_per_trade_pct", 1.5)) / 100.0
+    raw_desired_risk = cash_bal * risk_pct_cfg
+    stop_dist_frac = max(risk_pct_of_price / 100.0, 0.0012)
+    slot_share = min(0.30, 0.90 / max(max_open_positions, 1))
+    max_slot_notional = cash_bal * slot_share * 5.0
+    actual_capped_notional = min(raw_desired_risk / stop_dist_frac, max_slot_notional)
+    new_trade_risk = round(actual_capped_notional * stop_dist_frac, 2)
+
     worst_case_daily_drawdown = max(0.0, -pnl_today) + open_risk + new_trade_risk
-    max_daily_loss_usd = init_bal * 0.045
+    daily_limit_frac = max(0.045, risk_pct_cfg * max(max_open_positions, 3) * 1.1)
+    max_daily_loss_usd = round(init_bal * daily_limit_frac, 2)
 
     if worst_case_daily_drawdown > max_daily_loss_usd:
         return {
